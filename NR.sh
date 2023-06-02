@@ -36,9 +36,10 @@ init_checks() {
 	fi
 }
 
-
+# check for internet connectivity without getting blocked
 check_connectivity() {
-	! ping -c 1 google.com > /dev/null 2>&1 && echo "[!] No internet connection available!" && exit 1
+	nslookup google.com > /dev/null && return 0
+	echo "[!] No internet connection available!" && exit 1
 }
 
 handle_nipe() {
@@ -46,18 +47,13 @@ handle_nipe() {
 	
 	echo "[*] Installing nipe..."
 	check_connectivity
-
-	#mkdir "$nipe_path"
-	git clone https://github.com/GouveaHeitor/nipe.git "$nipe_path" #> /dev/null 2>&1
+	git clone https://github.com/GouveaHeitor/nipe.git "$nipe_path" > /dev/null 2>&1
 	cd "$nipe_path"
 		
-	sudo cpan install Try::Tiny Config::Simple JSON 1>/dev/null
-	sudo perl nipe.pl install || { echo "[!] Nipe installation failed"; exit 1; }
-	# sudo perl nipe.pl install > /dev/null
-	
-	#if [ $? -ne 0 ]; then
-	#	echo "Installation failed"
-	#fi
+	sudo cpan install Try::Tiny Config::Simple JSON >/dev/null 2>&1
+
+	sudo perl nipe.pl install
+	# || { echo "[!] Nipe installation failed"; exit 1; }
 }
 
 check_installed() {
@@ -84,8 +80,9 @@ install_programs() {
 		fi
 
 		echo "[*] Installing $program..."
-		sudo apt-get update > /dev/null
-		sudo apt-get install -y "$program" > /dev/null
+		check_connectivity
+		sudo apt-get update >/dev/null 2>&1
+		sudo apt-get install -y "$program" >/dev/null 2>&1
 	done
 }
  
@@ -99,7 +96,6 @@ check_domain_format() {
 	read -p "[?] Specify a Domain/IP address to scan: " user_input
 
 	if [[ $user_input =~ $ip_pattern ]]; then
-		#echo "$user_input"
 		target_domain=$(host "$user_input" | awk '{print $NF}'| sed 's/\.$//')
 		return 0
 	elif [[ $user_input =~ $domain_pattern ]]; then
@@ -139,16 +135,17 @@ setup_ssh() {
 nipe_start() {
 	cd "$nipe_path"
 	nipe_status=$(sudo perl nipe.pl status | grep -oP "(?<=Status: )\b(true|false)\b")
-	[ $nipe_status == "true" ] && echo "[#] nipe is already running." && return 0
+	[[ $nipe_status == "true" ]] && echo "[#] nipe is already running." && return 0
 
 	sudo perl nipe.pl start
 	
 	nipe_status=$(sudo perl nipe.pl status | grep -oP "(?<=Status: )\b(true|false)\b")
 
-	[ $nipe_status == "true" ] && return 0
+	[[ $nipe_status == "true" ]] && return 0
 
 	#if [ $nipe_status == "false" ]; then
 	echo "[!] Unexpected Error while starting nipe service"
+	sudo perl nipe.pl stop
 	exit 1
 	#fi
 }
@@ -175,18 +172,33 @@ install_programs
 nipe_start
 get_spoofed_value
 
-figlet "done"
-exit 0
 
-target_domain=""
-while [ -z "$target_domain" ]
-do
-	check_domain_format
-done
-#echo "$target_domain"
+#target_domain=""
+#while [ -z "$target_domain" ]
+#do
+#	check_domain_format
+#done
+##echo "$target_domain"
 
 
 echo -e "\n[*] Connecting to Remote Server:"
+
+remote_ip=$(curl -s ifconfig.me)
+
+if ! [[ $remote_ip =~ $ip_pattern ]]; then
+	echo "[!] Public IP test request was blocked, fix access issue with ifconfig.me"
+	exit 1
+fi
+
+
+echo "Uptime:$(uptime)"
+echo "IP address: $remote_ip"
+echo "Country: $(geoiplookup $remote_ip)"
+
+# api.ipify.org
+# curl ipinfo.io/ip
+# curl ifconfig.me/ip
+# geoiplookup $(curl ifconfig.me/ip)
 
 ##############################################################
 #setup_hidden_service
