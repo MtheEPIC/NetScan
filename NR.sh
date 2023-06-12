@@ -2,6 +2,7 @@
 
 # Define the programs to check and install
 programs=("geoip-bin" "tor" "sshpass" "nipe")
+# rm_programs=("whois" "nmap") #"geoip-bin" "curl") #"nipe")
 # Get the username using 'logname' command
 username=$(logname)
 # Regular expression patterns for IP address and domain
@@ -12,6 +13,17 @@ domain_pattern='^([a-zA-Z0-9][a-zA-Z0-9\-]{0,61}[a-zA-Z0-9]\.)+[a-zA-Z]{2,}$'
 nipe_path="/usr/bin/nipe"
 nipepl_path="/usr/bin/nipe/nipe.pl"
 #clone_path="/usr/bin"
+# remote connection type
+rm_mode="1" # 0-localhost 1-in lan 2-public 3-hidden service
+# values for SSH
+rm_ip="10.0.0.70"
+rm_user="michael"
+rm_pass="michael"
+# Get the directory path of the bash script
+script_dir="$(dirname "$0")"
+[[ $script_dir == "." ]] && script_dir=$(pwd)
+# Construct the absolute path to ssh key
+ssh_key_path="$script_dir/id_rsa"
 
 init_checks() {
 	if [[ $UID -ne 0 ]]; then
@@ -25,7 +37,7 @@ init_checks() {
 		fi
 	
 		cd "$nipe_path"
-		nipe_status=$(sudo perl nipe.pl status | grep -oP '(?<=Status: ).*')
+		local nipe_status=$(sudo perl nipe.pl status | grep -oP '(?<=Status: ).*')
 		if [ $nipe_status = "false" ]; then
 			echo "[!] Can't stop the service if it isn't running"
 			exit 1
@@ -38,6 +50,8 @@ init_checks() {
 
 # check for internet connectivity without getting blocked
 check_connectivity() {
+	return 0
+	#TODO remove the top return
 	nslookup google.com > /dev/null && return 0
 	echo "[!] No internet connection available!" && exit 1
 }
@@ -47,13 +61,18 @@ handle_nipe() {
 	
 	echo "[*] Installing nipe..."
 	check_connectivity
-	git clone https://github.com/GouveaHeitor/nipe.git "$nipe_path" > /dev/null 2>&1
-	cd "$nipe_path"
-		
-	sudo cpan install Try::Tiny Config::Simple JSON >/dev/null 2>&1
 
-	sudo perl nipe.pl install
-	# || { echo "[!] Nipe installation failed"; exit 1; }
+	# Download
+	git clone https://github.com/htrgouvea/nipe $nipe_path >/dev/null 2>&1
+	cd $nipe_path
+
+	# Install libs and dependencies
+	cpanm --installdeps .
+
+	# Nipe must be run as root
+	perl nipe.pl install
+
+	# # || { echo "[!] Nipe installation failed"; exit 1; }
 }
 
 check_installed() {
@@ -107,37 +126,12 @@ check_domain_format() {
 	fi
 }
 
-
-setup_ssh() {
-	# Generate SSH key pair
-	ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N ""
-
-	# Set correct permissions for SSH keys
-	chmod 700 ~/.ssh
-	chmod 600 ~/.ssh/id_rsa
-	
-	# Configure SSH to allow key-based authentication only
-	#sudo tee -a /etc/ssh/sshd_config > /dev/null <<EOT
-	#PasswordAuthentication no
-	#ChallengeResponseAuthentication no
-	#EOT
-
-	# Restart SSH service
-	sudo service ssh restart
-	
-	# Extract the Tor Hidden Service hostname
-	tor_hostname=$(sudo cat /var/lib/tor/hidden_service/hostname)
-
-	# SSH into the hidden service using private key
-	ssh -p 22 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/id_rsa user@$tor_hostname
-}
-
-nipe_start() {
+spoof_address() {
 	cd "$nipe_path"
 	nipe_status=$(sudo perl nipe.pl status | grep -oP "(?<=Status: )\b(true|false)\b")
 	[[ $nipe_status == "true" ]] && echo "[#] nipe is already running." && return 0
 
-	sudo perl nipe.pl start
+	sudo perl nipe.pl start 
 	
 	nipe_status=$(sudo perl nipe.pl status | grep -oP "(?<=Status: )\b(true|false)\b")
 
@@ -161,6 +155,60 @@ get_spoofed_value() {
 	echo "[*] Your Spoofed IP address is: $ip, Spoofed country: $country"
 }
 
+get_public_ip() {
+remote_ip=$(curl -s ifconfig.me)
+
+if ! [[ $remote_ip =~ $ip_pattern ]]; then
+	echo "[!] Public IP test request was blocked, atempting a differnt test.."
+	remote_ip=$(curl -s api.ipify.org)
+	echo "$remote_ip"
+	if [[ $remote_ip =~ $ip_pattern ]]; 
+		then echo "good"
+	else
+		echo "[!] Public IP tests FAILED, check access to ifconfig.me or api.ipify.org"
+		exit 1
+	fi
+fi
+
+echo "Uptime:$(uptime)"
+echo "IP address: $remote_ip"
+echo "Country: $(geoiplookup $remote_ip)"
+}
+
+remote_script() {
+	local log_dir="/var/log/NR"
+	local rm_programs=("whois" "nmap" "geoip-bin") # "curl") #"nipe")
+
+	local sudo_pass="michael"
+
+	echo "$sudo_pass" | sudo -S mkdir $log_dir 2>/dev/null
+	cd $log_dir
+
+
+	for program in "${rm_programs[@]}"; do
+		if dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -vq "ok installed"; then
+			echo "[*] Instaling $program"
+			echo "$sudo_pass" | sudo -S apt install -y $program >/dev/null 2>&1
+		fi
+	done
+
+	local remote_ip=141.136.36.110 #TODO use nipe
+	
+	cat <<EOF
+	Uptime:$(uptime)
+    IP address: $remote_ip
+    Country: $(geoiplookup $remote_ip)
+
+EOF
+
+	echo "[*] Whoising victim's address:"
+	# whois $1 #>/dev/null 2>&1
+
+	echo "[*] Scanning victims's address:"
+	# -A = -O -sV -sC --traceroute
+	# nmap -vvv -T4 $1 -oN nmap_$1.log >/dev/null 2>&1
+}
+
 #########################################################
 
 init_checks $@
@@ -169,31 +217,22 @@ echo "[?] To revert the settings back to normal run the script with -r flag"
 
 install_programs
 
-nipe_start
+spoof_address
 get_spoofed_value
 
 
-#target_domain=""
-#while [ -z "$target_domain" ]
-#do
-#	check_domain_format
-#done
-##echo "$target_domain"
+target_domain=""
+while [ -z "$target_domain" ]
+do
+	check_domain_format
+done
+echo "$target_domain"
 
 
 echo -e "\n[*] Connecting to Remote Server:"
 
-remote_ip=$(curl -s ifconfig.me)
-
-if ! [[ $remote_ip =~ $ip_pattern ]]; then
-	echo "[!] Public IP test request was blocked, fix access issue with ifconfig.me"
-	exit 1
-fi
-
-
-echo "Uptime:$(uptime)"
-echo "IP address: $remote_ip"
-echo "Country: $(geoiplookup $remote_ip)"
+# use sshpass
+sshpass -p $rm_pass ssh -o StrictHostKeyChecking=no $rm_user@$rm_ip "$(declare -f remote_script); $(declare -f get_public_ip); remote_script $target_domain"
 
 # api.ipify.org
 # curl ipinfo.io/ip
