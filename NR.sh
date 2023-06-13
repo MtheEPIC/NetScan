@@ -14,7 +14,7 @@ declare -rg nipe_path="/usr/bin/nipe"
 declare -rg nipepl_path="/usr/bin/nipe/nipe.pl"
 # remote connection type
 rm_mode="1" # 0-localhost 1-in lan 2-public 3-hidden service
-# values for SSH
+# values for SSHPASS
 rm_ip="10.0.0.70"
 rm_user="michael"
 rm_pass="michael"
@@ -23,32 +23,42 @@ script_dir="$(dirname "$0")"
 [[ $script_dir == "." ]] && script_dir=$(pwd)
 # path to the scripts log file
 declare -rg LOG_PATH="/var/log/nr.log"
+# path to saved scans
+declare -rg SCAN_PATH="$(pwd)/scans"
 
 
 # # Construct the absolute path to ssh key
 #ssh_key_path="$script_dir/id_rsa"
 
+usage() {
+	local script_name=$(basename "$0")
+cat << EOF
+Usage: $script_name [Options]
+EOF
+}
+
 init_checks() {
-	if [[ $UID -ne 0 ]]; then
-		echo "[!] This script requires root privileges. Please run with sudo."
-		exit 1
-	fi
-	if [ "$1" == "-r" ]; then
-		if [ ! -d "$nipe_path" ]; then
-			echo "[!] Can't stop the service that isn't installed"
-			exit 1
-		fi
+	[ $UID -ne 0 ] && echo "[!] This script requires root privileges. Please run with sudo." && exit 1
+	[ ! -d $SCAN_PATH ] && mkdir $SCAN_PATH
+	[ ! -f $LOG_PATH ] && sudo touch $LOG_PATH
 	
-		cd "$nipe_path"
-		local nipe_status=$(sudo perl nipe.pl status | grep -oP '(?<=Status: ).*')
-		if [ $nipe_status = "false" ]; then
-			echo "[!] Can't stop the service if it isn't running"
-			exit 1
-		fi
-	
-		revert_to_default
-		exit 0
-	fi
+	while getopts ":hr" opt; do
+		case $opt in
+			h)
+				usage
+				exit 0
+				;;
+			r)
+				revert_to_default
+				exit $?
+				;;
+			\?)
+				echo "[!] Invalid option: -$OPTARG"
+				usage
+				exit 1
+				;;
+		esac
+	done
 }
 
 # check for internet connectivity without getting blocked
@@ -92,9 +102,10 @@ install_programs() {
 			cd $nipe_path
 
 			# Install libs and dependencies
-			cpanm --installdeps .
+			! command -v cpanm >/dev/null && curl -L https://cpanmin.us >/dev/null 2>&1 | perl - App::cpanminus >/dev/null 2>&1
+			sudo cpanm --installdeps . >/dev/null 2>&1
 
-			sudo perl nipe.pl install
+			sudo perl nipe.pl install >/dev/null 2>&1
 		else
 			sudo apt-get update >/dev/null 2>&1
 			sudo apt-get install -y "$program" >/dev/null 2>&1
@@ -103,9 +114,11 @@ install_programs() {
 }
  
 revert_to_default() {
-	cd $nipe_path
-	sudo perl nipe.pl stop
+	[ ! -d "$nipe_path" ] && echo "[!] Can't stop the service that isn't installed" && return 1
+
+	sudo perl $nipe_path/nipe.pl stop >/dev/null 2>&1
 	echo "[*] nipe is disabled"
+	return 0
 }
 
 check_domain_format() {
@@ -153,7 +166,23 @@ get_spoofed_value() {
 	echo "[*] Your Spoofed IP address is: $ip, Spoofed country: $country"
 }
 
-############REMOTE-SCRIPTS####################
+remote_scan() {
+	local array_string=$(printf "%s " "${rm_programs[@]}")
+	sshpass -p $rm_pass ssh -o StrictHostKeyChecking=no $rm_user@$rm_ip "$(declare -f remote_script); $(declare -f install_programs); $(declare -f check_installed); remote_script $target_domain $array_string" 
+		
+	local whois_scan="whois_$target_domain"
+	local nmap_scan="nmap_$target_domain"
+	
+	get_whois $target_domain
+	sudo sshpass -p $rm_pass scp $rm_user@$rm_ip:/var/log/NR/$whois_scan $SCAN_PATH
+	echo "[@] Whois data was saved into $script_dir/$whois_scan."
+	
+	get_nmap $target_domain
+	sudo sshpass -p $rm_pass scp $rm_user@$rm_ip:/var/log/NR/$nmap_scan $SCAN_PATH
+	echo "[@] Nmap data was saved into $script_dir/$nmap_scan."
+}
+
+#####################REMOTE-SCRIPTS####################
 
 remote_script() {
 	local log_dir="/var/log/NR"
@@ -175,28 +204,29 @@ remote_script() {
 	echo "Country: $country_ip"
 }
 
-
-
-
 get_whois() {
 	local target=$1
-	local whoislog="whois_$target"
+	local scan_path="whois_$target"
 
 	echo -e "\n[*] Whoising victim's address:"
-	sudo touch $whoislog
-	sudo chmod a+w $whoislog
-	whois $target > $whoislog
-
+	sudo touch $scan_path
+	sudo chmod a+w $scan_path
+	whois $target > $scan_path
+	
+	# Log Audit 
+	echo "$(date)- [*] whois data collected for: $target" >> $LOG_PATH
 }
 
 get_nmap() {
 	local target=$1
-	local nmaplog="nmap_$target"
+	local scan_path="nmap_$target"
 	
 	echo -e "\n[*] Scanning victims's address:"
-	sudo touch $nmaplog
+	sudo touch $scan_path
 	# -A = -O -sV -sC --traceroute
-	sudo nmap -vvv -T4 $target -oN $nmaplog >/dev/null 2>&1
+	sudo nmap -vvv -T4 $target -oN $scan_path >/dev/null 2>&1
+	# Log Audit
+	echo "$(date)- [*] Nmap data collected for: $target_domain" >> $LOG_PATH
 }
 
 #########################################################
@@ -218,38 +248,7 @@ done
 
 echo -e "\n[*] Connecting to Remote Server:"
 
-
-array_string=$(printf "%s " "${rm_programs[@]}")
-# use sshpass
-sshpass -p $rm_pass ssh -o StrictHostKeyChecking=no $rm_user@$rm_ip "$(declare -f remote_script); $(declare -f install_programs); $(declare -f check_installed); remote_script $target_domain $array_string" 
-
-
-declare -g whoislog="whois_$target_domain"
-declare -g nmaplog="nmap_$target_domain"
-
-cd $script_dir
-
-get_whois $target_domain
-
-sudo sshpass -p $rm_pass scp $rm_user@$rm_ip:/var/log/NR/$whoislog ./
-echo "[@] Whois data was saved into $script_dir/$whoislog."
-
-get_nmap $target_domain
-
-sudo sshpass -p $rm_pass scp $rm_user@$rm_ip:/var/log/NR/$nmaplog ./
-echo "[@] Nmap data was saved into $script_dir/$nmaplog."
-
-
-
-
-
-
-# cd $LOG_PATH
-
-
-# cat /var/log/nr.log
-# echo "$(date)- [*] whois data collected for: $target_domain" >> $LOG_PATH
-# echo "$(date)- [*] Nmap data collected for: $target_domain" >> $LOG_PATH
+remote_scan
 
 
 # get target for remote
