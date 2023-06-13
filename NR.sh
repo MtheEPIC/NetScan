@@ -1,18 +1,17 @@
 #!/bin/bash
 
 # Define the programs to check and install
-programs=("geoip-bin" "tor" "sshpass" "nipe")
-# rm_programs=("whois" "nmap") #"geoip-bin" "curl") #"nipe")
+declare -gra programs=("geoip-bin" "tor" "sshpass" "nipe")
+declare -gra rm_programs=("whois" "nmap" "geoip-bin") # "curl") #"nipe")
 # Get the username using 'logname' command
-username=$(logname)
+declare -gr username=$(logname)
 # Regular expression patterns for IP address and domain
-ip_pattern='^(25[0-5]|2[0-4][0-9]|[1-9][0-9]?|0)(\.(25[0-5]|2[0-4][0-9]|[1-9][0-9]?|0)){3}$'
-domain_pattern='^([a-zA-Z0-9][a-zA-Z0-9\-]{0,61}[a-zA-Z0-9]\.)+[a-zA-Z]{2,}$'
+declare -rg ip_pattern='^(25[0-5]|2[0-4][0-9]|[1-9][0-9]?|0)(\.(25[0-5]|2[0-4][0-9]|[1-9][0-9]?|0)){3}$'
+declare -rg domain_pattern='^([a-zA-Z0-9][a-zA-Z0-9\-]{0,61}[a-zA-Z0-9]\.)+[a-zA-Z]{2,}$'
 # Define path for the nipe program installation
 #nipe_path="/home/$username/nipe"
-nipe_path="/usr/bin/nipe"
-nipepl_path="/usr/bin/nipe/nipe.pl"
-#clone_path="/usr/bin"
+declare -rg nipe_path="/usr/bin/nipe"
+declare -rg nipepl_path="/usr/bin/nipe/nipe.pl"
 # remote connection type
 rm_mode="1" # 0-localhost 1-in lan 2-public 3-hidden service
 # values for SSH
@@ -22,8 +21,12 @@ rm_pass="michael"
 # Get the directory path of the bash script
 script_dir="$(dirname "$0")"
 [[ $script_dir == "." ]] && script_dir=$(pwd)
-# Construct the absolute path to ssh key
-ssh_key_path="$script_dir/id_rsa"
+# path to the scripts log file
+declare -rg LOG_PATH="/var/log/nr.log"
+
+
+# # Construct the absolute path to ssh key
+#ssh_key_path="$script_dir/id_rsa"
 
 init_checks() {
 	if [[ $UID -ne 0 ]]; then
@@ -56,30 +59,10 @@ check_connectivity() {
 	echo "[!] No internet connection available!" && exit 1
 }
 
-handle_nipe() {
-	[ -f "$nipepl_path" ] && echo "[#] nipe is already installed." && return 0
-	
-	echo "[*] Installing nipe..."
-	check_connectivity
-
-	# Download
-	git clone https://github.com/htrgouvea/nipe $nipe_path >/dev/null 2>&1
-	cd $nipe_path
-
-	# Install libs and dependencies
-	cpanm --installdeps .
-
-	# Nipe must be run as root
-	perl nipe.pl install
-
-	# # || { echo "[!] Nipe installation failed"; exit 1; }
-}
-
 check_installed() {
 	np="nipe"
 	if [ "$1" == "$np" ]; then
-		handle_nipe
-		return 0
+		[ -f "$nipepl_path" ] && echo "[#] nipe is already installed." && return 0 || return 1
 	else
 		#if command -v "$1" >/dev/null 2>&1; then 
 		if dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q "ok installed"; then
@@ -93,15 +76,29 @@ check_installed() {
 
 # Loop through the programs array and check/install each program
 install_programs() {
-	for program in "${programs[@]}"; do
+	local array=("$@")
+
+	for program in "${array[@]}"; do
 		if check_installed "$program"; then
 			continue  # Skip installation if program is already >
 		fi
 
+		# check_connectivity #TODO make run once
+		
 		echo "[*] Installing $program..."
-		check_connectivity
-		sudo apt-get update >/dev/null 2>&1
-		sudo apt-get install -y "$program" >/dev/null 2>&1
+		if [ $program == "nipe" ]; then
+			# Download
+			git clone https://github.com/htrgouvea/nipe $nipe_path >/dev/null 2>&1
+			cd $nipe_path
+
+			# Install libs and dependencies
+			cpanm --installdeps .
+
+			sudo perl nipe.pl install
+		else
+			sudo apt-get update >/dev/null 2>&1
+			sudo apt-get install -y "$program" >/dev/null 2>&1
+		fi
 	done
 }
  
@@ -115,7 +112,8 @@ check_domain_format() {
 	read -p "[?] Specify a Domain/IP address to scan: " user_input
 
 	if [[ $user_input =~ $ip_pattern ]]; then
-		target_domain=$(host "$user_input" | awk '{print $NF}'| sed 's/\.$//')
+		# target_domain=$(host "$user_input" | awk '{print $NF}'| sed 's/\.$//')
+		target_domain=$user_input
 		return 0
 	elif [[ $user_input =~ $domain_pattern ]]; then
 		target_domain=$user_input
@@ -129,7 +127,7 @@ check_domain_format() {
 spoof_address() {
 	cd "$nipe_path"
 	nipe_status=$(sudo perl nipe.pl status | grep -oP "(?<=Status: )\b(true|false)\b")
-	[[ $nipe_status == "true" ]] && echo "[#] nipe is already running." && return 0
+	[[ $nipe_status == "true" ]] && return 0 #echo "[#] nipe is already running." && return 0
 
 	sudo perl nipe.pl start 
 	
@@ -155,91 +153,106 @@ get_spoofed_value() {
 	echo "[*] Your Spoofed IP address is: $ip, Spoofed country: $country"
 }
 
-get_public_ip() {
-remote_ip=$(curl -s ifconfig.me)
-
-if ! [[ $remote_ip =~ $ip_pattern ]]; then
-	echo "[!] Public IP test request was blocked, atempting a differnt test.."
-	remote_ip=$(curl -s api.ipify.org)
-	echo "$remote_ip"
-	if [[ $remote_ip =~ $ip_pattern ]]; 
-		then echo "good"
-	else
-		echo "[!] Public IP tests FAILED, check access to ifconfig.me or api.ipify.org"
-		exit 1
-	fi
-fi
-
-echo "Uptime:$(uptime)"
-echo "IP address: $remote_ip"
-echo "Country: $(geoiplookup $remote_ip)"
-}
+############REMOTE-SCRIPTS####################
 
 remote_script() {
 	local log_dir="/var/log/NR"
-	local rm_programs=("whois" "nmap" "geoip-bin") # "curl") #"nipe")
-
+	local rm_programs=("whois" "nmap" "geoip-bin") # "nipe")
 	local sudo_pass="michael"
+	local target=$1
+	local programs=("${@:2}")
 
 	echo "$sudo_pass" | sudo -S mkdir $log_dir 2>/dev/null
 	cd $log_dir
 
-
-	for program in "${rm_programs[@]}"; do
-		if dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -vq "ok installed"; then
-			echo "[*] Instaling $program"
-			echo "$sudo_pass" | sudo -S apt install -y $program >/dev/null 2>&1
-		fi
-	done
+	install_programs -q ${programs[@]} >/dev/null 2>&1
 
 	local remote_ip=141.136.36.110 #TODO use nipe
+	local country_ip=$(geoiplookup $remote_ip | cut -d " " -f 5-)
+
+	echo "Uptime:$(uptime)"
+	echo "IP address: $remote_ip"
+	echo "Country: $country_ip"
+}
+
+
+
+
+get_whois() {
+	local target=$1
+	local whoislog="whois_$target"
+
+	echo -e "\n[*] Whoising victim's address:"
+	sudo touch $whoislog
+	sudo chmod a+w $whoislog
+	whois $target > $whoislog
+
+}
+
+get_nmap() {
+	local target=$1
+	local nmaplog="nmap_$target"
 	
-	cat <<EOF
-	Uptime:$(uptime)
-    IP address: $remote_ip
-    Country: $(geoiplookup $remote_ip)
-
-EOF
-
-	echo "[*] Whoising victim's address:"
-	# whois $1 #>/dev/null 2>&1
-
-	echo "[*] Scanning victims's address:"
+	echo -e "\n[*] Scanning victims's address:"
+	sudo touch $nmaplog
 	# -A = -O -sV -sC --traceroute
-	# nmap -vvv -T4 $1 -oN nmap_$1.log >/dev/null 2>&1
+	sudo nmap -vvv -T4 $target -oN $nmaplog >/dev/null 2>&1
 }
 
 #########################################################
 
 init_checks $@
 
-echo "[?] To revert the settings back to normal run the script with -r flag"
+# echo "[?] To revert the settings back to normal run the script with -r flag"
 
-install_programs
+install_programs ${programs[@]}
 
 spoof_address
 get_spoofed_value
 
-
-target_domain=""
+declare -g target_domain=""
 while [ -z "$target_domain" ]
 do
 	check_domain_format
 done
-echo "$target_domain"
-
 
 echo -e "\n[*] Connecting to Remote Server:"
 
+
+array_string=$(printf "%s " "${rm_programs[@]}")
 # use sshpass
-sshpass -p $rm_pass ssh -o StrictHostKeyChecking=no $rm_user@$rm_ip "$(declare -f remote_script); $(declare -f get_public_ip); remote_script $target_domain"
+sshpass -p $rm_pass ssh -o StrictHostKeyChecking=no $rm_user@$rm_ip "$(declare -f remote_script); $(declare -f install_programs); $(declare -f check_installed); remote_script $target_domain $array_string" 
 
-# api.ipify.org
-# curl ipinfo.io/ip
-# curl ifconfig.me/ip
-# geoiplookup $(curl ifconfig.me/ip)
 
-##############################################################
-#setup_hidden_service
-#setup_ssh
+declare -g whoislog="whois_$target_domain"
+declare -g nmaplog="nmap_$target_domain"
+
+cd $script_dir
+
+get_whois $target_domain
+
+sudo sshpass -p $rm_pass scp $rm_user@$rm_ip:/var/log/NR/$whoislog ./
+echo "[@] Whois data was saved into $script_dir/$whoislog."
+
+get_nmap $target_domain
+
+sudo sshpass -p $rm_pass scp $rm_user@$rm_ip:/var/log/NR/$nmaplog ./
+echo "[@] Nmap data was saved into $script_dir/$nmaplog."
+
+
+
+
+
+
+# cd $LOG_PATH
+
+
+# cat /var/log/nr.log
+# echo "$(date)- [*] whois data collected for: $target_domain" >> $LOG_PATH
+# echo "$(date)- [*] Nmap data collected for: $target_domain" >> $LOG_PATH
+
+
+# get target for remote
+# nmap -p 22 --exclude 10.0.0.50 10.0.0.50/24 | grep -B 4 "open" |  awk '/Nmap scan/{print $NF}' | head -n 1
+# hydra -l michael -P temp ssh://10.0.0.70 -o rm_creds >/dev/null 2>&1
 
