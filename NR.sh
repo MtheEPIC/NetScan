@@ -13,7 +13,7 @@ declare -rg domain_pattern='^([a-zA-Z0-9][a-zA-Z0-9\-]{0,61}[a-zA-Z0-9]\.)+[a-zA
 declare -rg nipe_path="/usr/bin/nipe"
 declare -rg nipepl_path="/usr/bin/nipe/nipe.pl"
 # remote connection type
-rm_mode="1" # 0-localhost 1-in lan 2-public 3-hidden service
+declare -gi rm_mode="1" # 0-localhost 1-in lan 2-public 3-hidden service
 # values for SSHPASS
 rm_ip="10.0.0.70"
 rm_user="michael"
@@ -33,7 +33,15 @@ declare -rg SCAN_PATH="$(pwd)/scans"
 usage() {
 	local script_name=$(basename "$0")
 cat << EOF
-Usage: $script_name [Options]
+Usage: $script_name [Options] {target_domain}
+-h Describe how to run the script
+-r Revert the network setting (i.e. before routing trafic through the tor network)
+-m Choose the remote level of abstraction:
+	0 localhost 
+	1 lan range
+	2 public ip range 
+	3 hidden service
+ 
 EOF
 }
 
@@ -42,7 +50,7 @@ init_checks() {
 	[ ! -d $SCAN_PATH ] && mkdir $SCAN_PATH
 	[ ! -f $LOG_PATH ] && sudo touch $LOG_PATH
 	
-	while getopts ":hr" opt; do
+	while getopts ":hrm:" opt; do
 		case $opt in
 			h)
 				usage
@@ -52,13 +60,23 @@ init_checks() {
 				revert_to_default
 				exit $?
 				;;
+			m)
+				! [[ $OPTARG =~ ^[0-3]$ ]] && echo "unexpected value, see -h" && exit 1
+				rm_mode=$OPTARG
+				echo "$rm_mode"
+				;;
 			\?)
 				echo "[!] Invalid option: -$OPTARG"
 				usage
 				exit 1
 				;;
+			:)
+				[ $OPTARG == "m" ] && echo "-m requires a value" && exit 1
+				;;
 		esac
 	done
+
+	shift $((OPTIND - 1))
 }
 
 # check for internet connectivity without getting blocked
@@ -98,13 +116,14 @@ install_programs() {
 		echo "[*] Installing $program..."
 		if [ $program == "nipe" ]; then
 			# Download
-			git clone https://github.com/htrgouvea/nipe $nipe_path >/dev/null 2>&1
+			[ -z "$nipe_path" ] && nipe_path="$(pwd)/nipe"
+			sudo git clone https://github.com/htrgouvea/nipe $nipe_path >/dev/null 2>&1
 			cd $nipe_path
 
 			# Install libs and dependencies
-			! command -v cpanm >/dev/null && curl -L https://cpanmin.us >/dev/null 2>&1 | perl - App::cpanminus >/dev/null 2>&1
+			! command -v cpanm >/dev/null && curl -L https://cpanmin.us 2>/dev/null | sudo perl - App::cpanminus >/dev/null 2>&1
+			
 			sudo cpanm --installdeps . >/dev/null 2>&1
-
 			sudo perl nipe.pl install >/dev/null 2>&1
 		else
 			sudo apt-get update >/dev/null 2>&1
@@ -185,18 +204,21 @@ remote_scan() {
 #####################REMOTE-SCRIPTS####################
 
 remote_script() {
-	local log_dir="/var/log/NR"
-	local rm_programs=("whois" "nmap" "geoip-bin") # "nipe")
+	# local log_dir="/var/log/NR"
+	local programs=("whois" "nmap" "geoip-bin" "git" "curl" "build-essential" "nipe")
 	local sudo_pass="michael"
 	local target=$1
-	local programs=("${@:2}")
+
+	echo "$sudo_pass" | sudo -S ls >/dev/null 2>&1
 
 	echo "$sudo_pass" | sudo -S mkdir $log_dir 2>/dev/null
-	cd $log_dir
 
-	install_programs -q ${programs[@]} >/dev/null 2>&1
+	install_programs ${programs[@]} >/dev/null 2>&1
 
-	local remote_ip=141.136.36.110 #TODO use nipe
+	sudo perl $nipe_path/nipe.pl start
+	local status=$(sudo perl $nipe_path/nipe.pl status)
+	local remote_ip=$(echo $status | awk '/Ip:/ { print $NF } ')
+
 	local country_ip=$(geoiplookup $remote_ip | cut -d " " -f 5-)
 
 	echo "Uptime:$(uptime)"
