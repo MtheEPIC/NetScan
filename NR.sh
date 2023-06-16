@@ -107,27 +107,28 @@ install_programs() {
 	local array=("$@")
 
 	for program in "${array[@]}"; do
-		if check_installed "$program"; then
-			continue  # Skip installation if program is already >
-		fi
-
+		# Skip installation if program is already installed
+		check_installed "$program" && continue 
+		
 		# check_connectivity #TODO make run once
 		
 		echo "[*] Installing $program..."
 		if [ $program == "nipe" ]; then
+			# Install libs and dependencies
+			! command -v cpanm >/dev/null && curl -L https://cpanmin.us | sudo perl - App::cpanminus
+
 			# Download
 			[ -z "$nipe_path" ] && nipe_path="$(pwd)/nipe"
-			sudo git clone https://github.com/htrgouvea/nipe $nipe_path >/dev/null 2>&1
-			cd $nipe_path
+			sudo git clone https://github.com/htrgouvea/nipe $nipe_path
+			cd $nipe_path # Must cd for the script to find modules
 
-			# Install libs and dependencies
-			! command -v cpanm >/dev/null && curl -L https://cpanmin.us 2>/dev/null | sudo perl - App::cpanminus >/dev/null 2>&1
 			
-			sudo cpanm --installdeps . >/dev/null 2>&1
-			sudo perl nipe.pl install >/dev/null 2>&1
+			sudo cpanm --installdeps .
+			# sudo cpanm install Nipe::Engine::Stop
+			sudo perl nipe.pl install
 		else
-			sudo apt-get update >/dev/null 2>&1
-			sudo apt-get install -y "$program" >/dev/null 2>&1
+			sudo apt-get update #TODO RUN ONCE
+			sudo apt-get install -y "$program"
 		fi
 	done
 }
@@ -167,11 +168,9 @@ spoof_address() {
 
 	[[ $nipe_status == "true" ]] && return 0
 
-	#if [ $nipe_status == "false" ]; then
 	echo "[!] Unexpected Error while starting nipe service"
 	sudo perl nipe.pl stop
 	exit 1
-	#fi
 }
 
 get_spoofed_value() {
@@ -186,19 +185,31 @@ get_spoofed_value() {
 }
 
 remote_scan() {
+	local rm_scans="/home/michael" #TODO change to dynamic
+
+
 	local array_string=$(printf "%s " "${rm_programs[@]}")
 	sshpass -p $rm_pass ssh -o StrictHostKeyChecking=no $rm_user@$rm_ip "$(declare -f remote_script); $(declare -f install_programs); $(declare -f check_installed); remote_script $target_domain $array_string" 
 		
 	local whois_scan="whois_$target_domain"
 	local nmap_scan="nmap_$target_domain"
 	
-	get_whois $target_domain
-	sudo sshpass -p $rm_pass scp $rm_user@$rm_ip:/var/log/NR/$whois_scan $SCAN_PATH
-	echo "[@] Whois data was saved into $script_dir/$whois_scan."
+
+	# get_whois $target_domain
+
+
+	sshpass -p $rm_pass ssh -o StrictHostKeyChecking=no $rm_user@$rm_ip "$(declare -f get_whois); get_whois $target_domain" "$rm_pass"
+	sudo sshpass -p $rm_pass scp $rm_user@$rm_ip:$rm_scans/$whois_scan $SCAN_PATH
+	echo "[@] Whois data was saved into $SCAN_PATH/$whois_scan."
+	# Log Audit 
+	echo "$(date)- [*] whois data collected for: $target_domain" >> $LOG_PATH
 	
-	get_nmap $target_domain
+	# get_nmap $target_domain
+	sshpass -p $rm_pass ssh -o StrictHostKeyChecking=no $rm_user@$rm_ip "$(declare -f get_nmap); get_nmap $target_domain" "$rm_pass"
 	sudo sshpass -p $rm_pass scp $rm_user@$rm_ip:/var/log/NR/$nmap_scan $SCAN_PATH
-	echo "[@] Nmap data was saved into $script_dir/$nmap_scan."
+	echo "[@] Nmap data was saved into $SCAN_PATH/$nmap_scan."
+	# Log Audit
+	echo "$(date)- [*] Nmap data collected for: $target_domain" >> $LOG_PATH
 }
 
 #####################REMOTE-SCRIPTS####################
@@ -228,36 +239,38 @@ remote_script() {
 
 get_whois() {
 	local target=$1
+	local rm_pass=$2
 	local scan_path="whois_$target"
 
 	echo -e "\n[*] Whoising victim's address:"
-	sudo touch $scan_path
+	pwd
+	echo "$rm_pass" | sudo -S touch $scan_path
 	sudo chmod a+w $scan_path
-	whois $target > $scan_path
-	
-	# Log Audit 
-	echo "$(date)- [*] whois data collected for: $target" >> $LOG_PATH
+	whois $target > $scan_path	
 }
 
 get_nmap() {
 	local target=$1
+	local rm_pass=$2
 	local scan_path="nmap_$target"
 	
 	echo -e "\n[*] Scanning victims's address:"
-	sudo touch $scan_path
+	echo "$rm_pass" | sudo -S touch $scan_path
 	# -A = -O -sV -sC --traceroute
 	sudo nmap -vvv -T4 $target -oN $scan_path >/dev/null 2>&1
-	# Log Audit
-	echo "$(date)- [*] Nmap data collected for: $target_domain" >> $LOG_PATH
 }
 
 #########################################################
 
 init_checks $@
 
-# echo "[?] To revert the settings back to normal run the script with -r flag"
+install_programs ${programs[@]} </dev/null 2>&1
 
-install_programs ${programs[@]}
+# figlet "DONE"
+# pwd
+# dirname $0
+# echo $0
+# exit 0
 
 spoof_address
 get_spoofed_value
