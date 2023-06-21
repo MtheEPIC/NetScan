@@ -8,6 +8,8 @@ declare -rg ip_pattern='^(25[0-5]|2[0-4][0-9]|[1-9][0-9]?|0)(\.(25[0-5]|2[0-4][0
 declare -rg domain_pattern='^([a-zA-Z0-9][a-zA-Z0-9\-]{0,61}[a-zA-Z0-9]\.)+[a-zA-Z]{2,}$'
 # Define path for the nipe program installation
 #nipe_path="/home/$username/nipe"
+# Get the directory path of the bash script
+script_dir="$(dirname "$0")"
 declare -rg HNAME_PATH="/etc/hostname"
 declare -rg HNAME_BAK="$script_dir/hostname.bak"
 declare -rg nipe_path="/usr/bin/nipe"
@@ -21,8 +23,6 @@ rm_ip="10.0.0.70"
 rm_user="michael"
 rm_pass="michael"
 rm_port="22"
-# Get the directory path of the bash script
-script_dir="$(dirname "$0")"
 [[ $script_dir == "." ]] && script_dir=$(pwd)
 # path to the scripts log file
 declare -rg LOG_PATH="/var/log/nr.log"
@@ -137,7 +137,7 @@ install_programs() {
 }
  
 revert_to_default() {
-	[ -f "$HNAME_BAK" ] && cat $HNAME_BAK > $HNAME_PATH
+	[ -f "$HNAME_BAK" ] && cat $HNAME_BAK > $HNAME_PATH && rm $HNAME_BAK
 
 	[ ! -d "$nipe_path" ] && echo "[!] Can't stop the service that isn't installed" && return 1
 
@@ -172,7 +172,7 @@ check_domain_format() {
 
 spoof_address() {	
 	[ ! -f "$HNAME_BAK" ] && cp $HNAME_PATH $HNAME_BAK
-	echo $RANDOM > HNAME_PATH
+	echo $RANDOM > $HNAME_PATH
 
 	cd "$nipe_path"
 	nipe_status=$(sudo perl nipe.pl status | grep -oP "(?<=Status: )\b(true|false)\b")
@@ -263,7 +263,7 @@ get_whois() {
 
 #########################################################
 
-main() {
+# main() {
 	init_checks $@
 	
 	install_programs ${programs[@]} </dev/null 2>&1
@@ -280,15 +280,15 @@ main() {
 	echo -e "\n[*] Connecting to Remote Server:"
 	
 	start_date=$(date +%s)
-	# remote_scan
+	remote_scan
 	(( $(date +%s) - $start_date > 30 )) && think "well... that was a long wait"
 	
 	say "Have a good day"
 	
 	revert_to_default
-}
+# }
 
-main "{@}"
+# main "{@}"
 
 # get target for remote
 # nmap -p 22 --exclude 10.0.0.50 10.0.0.50/24 | grep -B 4 "open" |  awk '/Nmap scan/{print $NF}' | head -n 1
